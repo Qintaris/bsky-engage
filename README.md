@@ -63,6 +63,9 @@ python3 bsky_engage.py --dry-run
 
 # Contrôler le volume
 python3 bsky_engage.py --mode engage --max-follows 2 --max-likes 5 --max-comments 2
+
+# Trouver ton meilleur horaire de publication
+python3 bsky_engage.py --best-time
 ```
 
 ## 🎯 Les 5 modes
