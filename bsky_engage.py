@@ -17,7 +17,7 @@ Configuration:
         export BSKY_PASSWORD="votre-mot-de-passe-app"
 """
 
-import json, sys, os, urllib.request, urllib.error, urllib.parse, datetime, random
+import json, sys, os, urllib.request, urllib.error, urllib.parse, datetime, random, shlex
 
 # ── Config ──────────────────────────────────────────────────────────────
 HANDLE = os.environ.get("BSKY_HANDLE", "")
@@ -434,6 +434,47 @@ def post_with_image(text, image_path, token, did):
     return False, f"❌ Image post failed: {data}"
 
 
+# ── Thread support ──────────────────────────────────────────────────────
+
+def get_last_post_uri(token, did):
+    """Get the URI of your most recent post."""
+    status, data = api("GET", "/xrpc/com.atproto.repo.listRecords",
+                       headers={"Authorization": f"Bearer {token}"},
+                       params={"repo": did, "collection": "app.bsky.feed.post", "limit": 1})
+    if status != 200:
+        return None, None
+    records = data.get("records", [])
+    if not records:
+        return None, None
+    r = records[0]
+    return r.get("uri"), r.get("cid")
+
+
+# ── Scheduling ─────────────────────────────────────────────────────────
+
+def schedule_command(cmd, schedule_str):
+    """Schedule a shell command using `at` on Linux/macOS."""
+    import subprocess, shlex
+    try:
+        proc = subprocess.run(["which", "at"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            print("  ⚠️  `at` command not found. Install it: sudo apt install at (Linux) or brew install at (macOS)")
+            return False
+        # Wrap the Python command
+        full_cmd = f"cd {shlex.quote(os.getcwd())} && {cmd}"
+        proc = subprocess.run(["at", schedule_str], input=full_cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            print(f"  ✅ Scheduled: {schedule_str}")
+            print(f"  📋 {proc.stdout.strip()}")
+            return True
+        else:
+            print(f"  ❌ Schedule failed: {proc.stderr.strip()}")
+            return False
+    except Exception as e:
+        print(f"  ❌ Schedule error: {e}")
+        return False
+
+
 # ── MAIN ────────────────────────────────────────────────────────────────
 def main():
     import argparse
@@ -451,11 +492,19 @@ def main():
                         help="Max likes (default: 3)")
     parser.add_argument("--max-comments", type=int, default=1,
                         help="Max comments (default: 1)")
+    parser.add_argument("--thread", action="store_true",
+                        help="Reply to your last post (thread mode)")
+    parser.add_argument("--reply-to", type=str, default="",
+                        help="URI of a post to reply to (e.g. at://did:plc:xxx/app.bsky.feed.post/yyy)")
+    parser.add_argument("--stats", action="store_true", default=True,
+                        help="Show session stats at the end (default: on)")
+    parser.add_argument("--no-stats", action="store_false", dest="stats",
+                        help="Hide session stats")
+    parser.add_argument("--in", type=str, default="", dest="schedule_in",
+                        help="Schedule post in e.g. '5min', '2h', '1day' (uses `at` on Linux)")
+    parser.add_argument("--at", type=str, default="", dest="schedule_at",
+                        help="Schedule post at e.g. '14:00', 'tomorrow 9am' (uses `at` on Linux)")
     args = parser.parse_args()
-
-    if not HANDLE:
-        print("❌ BSKY_HANDLE not set. Set it in .env or export it.")
-        sys.exit(1)
 
     # ── Read message from stdin if available ──
     stdin_msg = ""
@@ -467,7 +516,7 @@ def main():
 
     msg = args.message or stdin_msg or ""
 
-    # ── Dry-run ──
+    # ── Dry-run (before HANDLE check) ──
     if args.dry_run:
         print("🔍 DRY RUN — No real actions\n")
         if args.mode in ("post", "all"):
@@ -480,13 +529,44 @@ def main():
         if args.mode == "photo":
             img = args.image if args.image else "(none)"
             print(f"📸 Would post photo: {img}")
+        if args.thread:
+            print(f"🔗 Thread mode: would reply to last post")
+        if args.schedule_in:
+            print(f"⏰ Would schedule in: {args.schedule_in}")
+        if args.schedule_at:
+            print(f"⏰ Would schedule at: {args.schedule_at}")
         print("\n✅ Dry run complete.")
         sys.exit(0)
+
+    if not HANDLE:
+        print("❌ BSKY_HANDLE not set. Set it in .env or export it.")
+        sys.exit(1)
+
+    # ── Handle scheduling ──
+    if args.schedule_in or args.schedule_at:
+        schedule_str = args.schedule_in if args.schedule_in else args.schedule_at
+        cmd = f"echo {shlex.quote(msg)} | python3 {shlex.quote(os.path.abspath(__file__))} --mode {args.mode}"
+        if args.image:
+            cmd += f" --image {shlex.quote(args.image)}"
+        if args.max_follows != 5:
+            cmd += f" --max-follows {args.max_follows}"
+        if args.max_likes != 3:
+            cmd += f" --max-likes {args.max_likes}"
+        if args.max_comments != 1:
+            cmd += f" --max-comments {args.max_comments}"
+        sched_arg = args.schedule_in if args.schedule_in else args.schedule_at
+        schedule_command(cmd, sched_arg)
+        return
+
+    # ── Stats tracker ──
+    stats = {"posts": 0, "replies": 0, "follows": 0, "likes": 0, "comments": 0}
 
     # ── Login ──
     print(f"🔐 Connecting as @{HANDLE}...")
     token, did = login()
     print(f"  ✅ Connected")
+
+    result = ""  # track last action URI
 
     # ── Mode post ──
     if args.mode in ("post", "all"):
@@ -495,23 +575,83 @@ def main():
             print("  ℹ️  No message provided. Pipe text in: echo 'Hello' | python3 bsky_engage.py --mode post")
             print("  Or use: --message \"Your text\"")
         else:
-            print(f"\nMessage:\n{msg}\n")
-            success, result = post_message(msg, token, did)
+            # Thread? Reply to last post
+            target_uri, target_cid = None, None
+            if args.thread:
+                target_uri, target_cid = get_last_post_uri(token, did)
+                if target_uri:
+                    print(f"  🔗 Replying to previous post (thread mode)")
+                else:
+                    print("  ℹ️  No previous post found, posting fresh")
+            if args.reply_to:
+                # Resolve reply_to to get CID
+                parts = args.reply_to.split("/")
+                rkey = parts[-1]
+                repo = parts[2] if len(parts) > 2 else did
+                status, data = api("GET", "/xrpc/com.atproto.repo.getRecord",
+                                   headers={"Authorization": f"Bearer {token}"},
+                                   params={"repo": repo, "collection": "app.bsky.feed.post", "rkey": rkey})
+                if status == 200:
+                    target_uri, target_cid = args.reply_to, data.get("cid")
+                    print(f"  🔗 Replying to specified post")
+                else:
+                    print(f"  ⚠️  Could not resolve --reply-to URI, posting fresh")
+
+            if target_uri and target_cid:
+                success, result = reply_to_post(msg, target_uri, target_cid, token, did)
+                if success:
+                    stats["replies"] += 1
+            else:
+                print(f"\nMessage:\n{msg}\n")
+                success, result = post_message(msg, token, did)
+                if success:
+                    stats["posts"] += 1
+
             if not success:
                 print(f"  {result}")
 
     # ── Mode engage ──
     if args.mode in ("engage", "all"):
         print(f"\n👥 Finding relevant accounts to follow...")
-        find_people_to_follow(token, did, max_new=args.max_follows)
+        n = find_people_to_follow(token, did, max_new=args.max_follows)
+        stats["follows"] += n
 
         print(f"\n❤️ Engaging with timeline...")
+        old_engage = engage_with_timeline
+        # Track likes/comments by wrapping the function
+        like_count = [0]
+        comment_count = [0]
+        original_like = like_post
+        original_reply = reply_to_post
+
+        def counting_like(uri, cid, tok, d):
+            r = original_like(uri, cid, tok, d)
+            if r: like_count[0] += 1
+            return r
+
+        def counting_reply(text, uri, cid, tok, d):
+            r = original_reply(text, uri, cid, tok, d)
+            if r and r[0]: comment_count[0] += 1
+            return r
+
+        import types
+        like_post_ref = globals()["like_post"]
+        reply_to_post_ref = globals()["reply_to_post"]
+        globals()["like_post"] = counting_like
+        globals()["reply_to_post"] = counting_reply
+
         engage_with_timeline(token, did, max_likes=args.max_likes, max_comments=args.max_comments)
+
+        globals()["like_post"] = like_post_ref
+        globals()["reply_to_post"] = reply_to_post_ref
+        stats["likes"] += like_count[0]
+        stats["comments"] += comment_count[0]
 
     # ── Mode comment ──
     if args.mode == "comment":
         print(f"\n💬 Commenting on timeline...")
         engage_with_timeline(token, did, max_likes=0, max_comments=args.max_comments)
+        # Can't easily track here without wrapping again
 
     # ── Mode photo ──
     if args.mode == "photo":
@@ -524,10 +664,31 @@ def main():
         else:
             print(f"  Image: {image_path}")
             success, result = post_with_image(msg, image_path, token, did)
+            if success:
+                stats["posts"] += 1
             if not success:
                 print(f"  {result}")
 
+    # ── Recap ──
+    if args.stats and any(v > 0 for v in stats.values()):
+        print(f"\n📊 Session recap:")
+        parts = []
+        if stats["posts"]: parts.append(f"📝 {stats['posts']} post(s)")
+        if stats["replies"]: parts.append(f"🔗 {stats['replies']} reply/ies in thread")
+        if stats["follows"]: parts.append(f"👤 {stats['follows']} new follow(s)")
+        if stats["likes"]: parts.append(f"❤️ {stats['likes']} like(s)")
+        if stats["comments"]: parts.append(f"💬 {stats['comments']} comment(s)")
+        print(f"  {' | '.join(parts)}")
     print(f"\n✅ Done.")
+
+    # ── Save last post URI for potential scheduling ──
+    last_uri_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), ".last_post")
+    try:
+        if isinstance(result, str) and result:
+            with open(last_uri_file, "w") as f:
+                f.write(result)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
