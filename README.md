@@ -98,13 +98,22 @@ Pas de pip install, pas de requirements.txt, pas de node_modules.
 python3 bsky_engage.py --dry-run
 ```
 
+## 🧪 Features avancées (déjà incluses)
+
+| Feature | Pourquoi | Usage |
+|---------|----------|-------|
+| 🧵 **Thread** | Répondre à ton dernier post | `--thread` |
+| 🔗 **Reply** | Répondre à un post spécifique | `--reply-to at://...` |
+| 📊 **Stats** | Récap de session | `--stats` (actif par défaut) |
+| ⏰ **Schedule** | Planifier un post | `--in "30min"` ou `--at "14:00"` |
+
 ## 🤝 Contribuer
 
-PRs bienvenues ! Idées :
-- Support des threads
-- Planification de posts
-- Stats d'engagement
-- Détection des meilleurs horaires
+PRs bienvenues ! Prochaines idées :
+- Détection des meilleurs horaires de publication
+- Support des threads longs (plusieurs replies à la suite)
+- Stats avancées (engagement par post, tendances)
+- Mode `--cron` pour intégration directe avec `at`
 
 ## 📄 Licence
 
