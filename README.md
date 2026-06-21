@@ -109,11 +109,11 @@ python3 bsky_engage.py --dry-run
 
 ## 🤝 Contribuer
 
-PRs bienvenues ! Prochaines idées :
-- Détection des meilleurs horaires de publication
-- Support des threads longs (plusieurs replies à la suite)
-- Stats avancées (engagement par post, tendances)
-- Mode `--cron` pour intégration directe avec `at`
+PRs bienvenues ! Les fonctions de base sont toutes là, mais voici ce qui n'existe PAS encore :
+- Détection des meilleurs horaires de publication (data-driven)
+- Threads longs automatiques (N replies à la suite)
+- Stats historiques (engagement par post, tendances)
+- Mode `--cron` pour scheduler sans `at`
 
 ## 📄 Licence
 
