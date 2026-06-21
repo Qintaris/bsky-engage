@@ -457,18 +457,28 @@ def main():
         print("❌ BSKY_HANDLE not set. Set it in .env or export it.")
         sys.exit(1)
 
+    # ── Read message from stdin if available ──
+    stdin_msg = ""
+    if not args.message and not sys.stdin.isatty():
+        try:
+            stdin_msg = sys.stdin.read().strip()
+        except Exception:
+            pass
+
+    msg = args.message or stdin_msg or ""
+
     # ── Dry-run ──
     if args.dry_run:
         print("🔍 DRY RUN — No real actions\n")
         if args.mode in ("post", "all"):
-            msg = args.message if args.message else "(auto-generated)"
-            print(f"📝 Would post: {msg}")
+            display = msg if msg else "(auto-generated if empty)"
+            print(f"📝 Would post: {display}")
         if args.mode in ("engage", "all"):
             print(f"👥 Would engage: {args.max_follows} follows, {args.max_likes} likes, {args.max_comments} comments")
         if args.mode == "comment":
             print(f"💬 Would comment: {args.max_comments} comments")
         if args.mode == "photo":
-            img = args.image if args.image else "(auto-lookup)"
+            img = args.image if args.image else "(none)"
             print(f"📸 Would post photo: {img}")
         print("\n✅ Dry run complete.")
         sys.exit(0)
@@ -481,14 +491,14 @@ def main():
     # ── Mode post ──
     if args.mode in ("post", "all"):
         print(f"\n📝 Preparing post...")
-        if args.message:
-            msg = args.message
+        if not msg:
+            print("  ℹ️  No message provided. Pipe text in: echo 'Hello' | python3 bsky_engage.py --mode post")
+            print("  Or use: --message \"Your text\"")
         else:
-            msg = "Sharing a thought today."
-        print(f"\nMessage:\n{msg}\n")
-        success, result = post_message(msg, token, did)
-        if not success:
-            print(f"  {result}")
+            print(f"\nMessage:\n{msg}\n")
+            success, result = post_message(msg, token, did)
+            if not success:
+                print(f"  {result}")
 
     # ── Mode engage ──
     if args.mode in ("engage", "all"):
@@ -506,10 +516,11 @@ def main():
     # ── Mode photo ──
     if args.mode == "photo":
         print(f"\n📸 Posting photo...")
-        msg = args.message or "📷"
         image_path = args.image if args.image else ""
         if not image_path:
             print("  ℹ️  No image path provided. Use --image <path>")
+        elif not msg:
+            print("  ℹ️  No message. Use --message or pipe text in.")
         else:
             print(f"  Image: {image_path}")
             success, result = post_with_image(msg, image_path, token, did)
