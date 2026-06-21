@@ -106,11 +106,11 @@ python3 bsky_engage.py --dry-run
 | 🔗 **Reply** | Répondre à un post spécifique | `--reply-to at://...` |
 | 📊 **Stats** | Récap de session | `--stats` (actif par défaut) |
 | ⏰ **Schedule** | Planifier un post | `--in "30min"` ou `--at "14:00"` |
+| 🏆 **Best Time** | Trouver le meilleur moment pour poster | `--best-time --best-time-posts 50` |
 
 ## 🤝 Contribuer
 
-PRs bienvenues ! Les fonctions de base sont toutes là, mais voici ce qui n'existe PAS encore :
-- Détection des meilleurs horaires de publication (data-driven)
+PRs bienvenues ! Ce qui n'existe PAS encore :
 - Threads longs automatiques (N replies à la suite)
 - Stats historiques (engagement par post, tendances)
 - Mode `--cron` pour scheduler sans `at`

@@ -137,6 +137,123 @@ def get_timeline(token, limit=30):
     return data.get("feed", [])
 
 
+# ── Historique pour l'analyse des horaires ──────────────────────────
+def get_author_feed(token, did, limit=50):
+    """Récupère les posts récents de l'utilisateur."""
+    status, data = api("GET", "/xrpc/app.bsky.feed.getAuthorFeed",
+                       headers={"Authorization": f"Bearer {token}"},
+                       params={"actor": did, "limit": min(limit, 100)})
+    if status != 200:
+        return []
+    return data.get("feed", [])
+
+
+def get_post_likes_count(token, uri, cid):
+    """Compte les likes d'un post."""
+    status, data = api("GET", "/xrpc/app.bsky.feed.getLikes",
+                       headers={"Authorization": f"Bearer {token}"},
+                       params={"uri": uri, "limit": 1})
+    if status == 200:
+        return data.get("likeCount", 0)
+    return 0
+
+
+def get_post_thread_engagement(token, uri):
+    """Compte les réponses à un post."""
+    status, data = api("GET", "/xrpc/app.bsky.feed.getPostThread",
+                       headers={"Authorization": f"Bearer {token}"},
+                       params={"uri": uri, "depth": 1})
+    if status != 200:
+        return 0
+    thread = data.get("thread", {})
+    replies = thread.get("replies", [])
+    return len(replies)
+
+
+def analyze_best_times(token, did, max_posts=50):
+    """Analyse les horaires de publication pour trouver les meilleurs créneaux."""
+    print(f"\n📊 Analyse des horaires de publication...")
+    feed = get_author_feed(token, did, limit=max_posts)
+    if not feed:
+        print("  ❌ Aucun post trouvé. Publie d'abord pour avoir des données.")
+        return
+
+    print(f"  📖 {len(feed)} posts récupérés")
+
+    from collections import defaultdict
+    hour_data = defaultdict(lambda: {"count": 0, "likes": 0, "replies": 0, "total": 0})
+
+    for item in feed:
+        post = item.get("post", {})
+        record = post.get("record", {})
+        uri = post.get("uri", "")
+        cid = post.get("cid", "")
+        like_count = post.get("likeCount", 0)
+        reply_count = post.get("replyCount", 0)
+        repost_count = post.get("repostCount", 0)
+
+        created_at = record.get("createdAt", "")
+        if not created_at:
+            continue
+
+        try:
+            dt = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            hour = dt.hour
+        except Exception:
+            continue
+
+        # Score d'engagement pondéré
+        engagement = like_count + (reply_count * 2) + repost_count
+
+        hour_data[hour]["count"] += 1
+        hour_data[hour]["likes"] += like_count
+        hour_data[hour]["replies"] += reply_count
+        hour_data[hour]["total"] += engagement
+
+        # Si le post a peu de données du feed, on va chercher plus loin
+        if like_count == 0 and reply_count == 0:
+            extra_likes = get_post_likes_count(token, uri, cid)
+            extra_replies = get_post_thread_engagement(token, uri)
+            if extra_likes: hour_data[hour]["likes"] += extra_likes
+            if extra_replies: hour_data[hour]["replies"] += extra_replies
+            hour_data[hour]["total"] += extra_likes + (extra_replies * 2)
+
+    # Calcul des moyennes et classement
+    if not hour_data:
+        print("  ❌ Impossible d'analyser les données.")
+        return
+
+    print(f"\n  {'Heure':<8} {'Posts':<7} {'Likes':<7} {'Replies':<9} {'Eng./post':<11} {'Note':<6}")
+    print(f"  {'-'*48}")
+
+    ranked = []
+    for hour in sorted(hour_data.keys()):
+        d = hour_data[hour]
+        eng_per_post = d["total"] / d["count"] if d["count"] > 0 else 0
+        ranked.append((hour, eng_per_post, d["count"], d["likes"], d["replies"]))
+
+        h = f"{hour:02d}h"
+        bar = "█" * min(int(eng_per_post * 2) + 1, 20)
+        note = f"{eng_per_post:.1f}"
+        print(f"  {h:<8} {d['count']:<7} {d['likes']:<7} {d['replies']:<9} {note:<11} {bar}")
+
+    # Top 3
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    top3 = [r for r in ranked if r[2] >= 2][:3]  # besoin d'au moins 2 posts dans ce créneau
+    if not top3 and ranked:
+        top3 = ranked[:3]  # fallback
+
+    print(f"\n  🏆 Meilleurs créneaux :")
+    for i, (hour, score, count, likes, replies) in enumerate(top3, 1):
+        print(f"    {i}. {hour:02d}h — {score:.1f} engagement/post ({count} posts, {likes} likes, {replies} replies)")
+
+    # Format utilisable avec --at
+    best_hour = top3[0][0] if top3 else None
+    if best_hour is not None:
+        print(f"\n  💡 Essaye de poster vers {best_hour:02d}h00 pour maximiser l'engagement !")
+        print(f"     → python3 bsky_engage.py --mode post --message \"Ton message\" --at \"{best_hour}:00\"")
+
+
 # ── Actions ─────────────────────────────────────────────────────────────
 def follow_user(handle, token, did):
     status, data = api("GET", "/xrpc/com.atproto.identity.resolveHandle",
@@ -498,6 +615,10 @@ def main():
                         help="URI of a post to reply to (e.g. at://did:plc:xxx/app.bsky.feed.post/yyy)")
     parser.add_argument("--stats", action="store_true", default=True,
                         help="Show session stats at the end (default: on)")
+    parser.add_argument("--best-time", action="store_true",
+                        help="Analyse les horaires de publication pour trouver le meilleur moment")
+    parser.add_argument("--best-time-posts", type=int, default=50,
+                        help="Nombre de posts à analyser (default: 50)")
     parser.add_argument("--no-stats", action="store_false", dest="stats",
                         help="Hide session stats")
     parser.add_argument("--in", type=str, default="", dest="schedule_in",
@@ -519,22 +640,25 @@ def main():
     # ── Dry-run (before HANDLE check) ──
     if args.dry_run:
         print("🔍 DRY RUN — No real actions\n")
-        if args.mode in ("post", "all"):
-            display = msg if msg else "(auto-generated if empty)"
-            print(f"📝 Would post: {display}")
-        if args.mode in ("engage", "all"):
-            print(f"👥 Would engage: {args.max_follows} follows, {args.max_likes} likes, {args.max_comments} comments")
-        if args.mode == "comment":
-            print(f"💬 Would comment: {args.max_comments} comments")
-        if args.mode == "photo":
-            img = args.image if args.image else "(none)"
-            print(f"📸 Would post photo: {img}")
-        if args.thread:
-            print(f"🔗 Thread mode: would reply to last post")
-        if args.schedule_in:
-            print(f"⏰ Would schedule in: {args.schedule_in}")
-        if args.schedule_at:
-            print(f"⏰ Would schedule at: {args.schedule_at}")
+        if args.best_time:
+            print(f"📊 Would analyze best posting times (last {args.best_time_posts} posts)")
+        else:
+            if args.mode in ("post", "all"):
+                display = msg if msg else "(auto-generated if empty)"
+                print(f"📝 Would post: {display}")
+            if args.mode in ("engage", "all"):
+                print(f"👥 Would engage: {args.max_follows} follows, {args.max_likes} likes, {args.max_comments} comments")
+            if args.mode == "comment":
+                print(f"💬 Would comment: {args.max_comments} comments")
+            if args.mode == "photo":
+                img = args.image if args.image else "(none)"
+                print(f"📸 Would post photo: {img}")
+            if args.thread:
+                print(f"🔗 Thread mode: would reply to last post")
+            if args.schedule_in:
+                print(f"⏰ Would schedule in: {args.schedule_in}")
+            if args.schedule_at:
+                print(f"⏰ Would schedule at: {args.schedule_at}")
         print("\n✅ Dry run complete.")
         sys.exit(0)
 
@@ -565,6 +689,12 @@ def main():
     print(f"🔐 Connecting as @{HANDLE}...")
     token, did = login()
     print(f"  ✅ Connected")
+
+    # ── Mode best-time (analyse indépendante) ──
+    if args.best_time:
+        analyze_best_times(token, did, max_posts=args.best_time_posts)
+        print(f"\n✅ Done.")
+        return
 
     result = ""  # track last action URI
 
