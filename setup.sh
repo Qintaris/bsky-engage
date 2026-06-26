@@ -18,6 +18,7 @@ if [ ! -f .env ]; then
     echo ""
     echo "📝 Creating .env file..."
     cp .env.example .env
+    chmod 600 .env
     echo ""
     echo "✏️  Edit .env with your Bluesky credentials:"
     echo "   nano .env"

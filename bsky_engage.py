@@ -83,7 +83,8 @@ def login():
     status, data = api("POST", "/xrpc/com.atproto.server.createSession",
                        json_body={"identifier": HANDLE, "password": PASSWORD})
     if status != 200:
-        print(f"❌ Login failed: {status} {data}")
+        reason = data.get("error") if isinstance(data, dict) else "unknown error"
+        print(f"❌ Login failed: {status} {reason}")
         sys.exit(1)
     return data["accessJwt"], data["did"]
 
