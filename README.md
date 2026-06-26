@@ -118,6 +118,12 @@ PRs bienvenues ! Ce qui n'existe PAS encore :
 - Stats historiques (engagement par post, tendances)
 - Mode `--cron` pour scheduler sans `at`
 
+## 💛 Soutenir
+
+Si `bsky-engage` te fait gagner du temps, tu peux soutenir le projet :
+
+[Faire un don via PayPal](https://www.paypal.com/donate/?hosted_button_id=95T36AZHYRJ82)
+
 ## 📄 Licence
 
 MIT — par [Aria Dubois](https://github.com/Qintaris)
